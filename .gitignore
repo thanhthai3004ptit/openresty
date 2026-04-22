@@ -1,0 +1,11 @@
+logs/*.log
+!logs/.gitkeep
+
+conf/env/*.env
+!conf/env/*.example
+
+.DS_Store
+Thumbs.db
+.codex
+
+doc
