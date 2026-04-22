@@ -1,142 +1,210 @@
-# OpenResty MVP
+# Cổng điều phối OpenResty
 
-Day la MVP OpenResty dau tien trong workspace nay, duoc dung de phuc vu 2 muc tieu:
+## Giới thiệu
 
-- Lam skeleton ky thuat cho gateway MVP
-- Lam PoC cho tai lieu research/evaluation OpenResty
+Đây là dự án xây dựng cổng điều phối trên nền `OpenResty`, hướng tới vai trò xử lý lưu lượng ở lớp biên và lớp API. Mục tiêu của dự án là tạo ra một nền tảng có thể mở rộng dần để đảm nhiệm các nhóm chức năng sau:
 
-## MVP hien co
+- chuyển tiếp yêu cầu và định tuyến đến dịch vụ phù hợp
+- xác thực và phân quyền ngay tại cổng điều phối
+- giới hạn tốc độ và kiểm soát lưu lượng
+- lọc yêu cầu và chặn các mẫu tấn công cơ bản
+- ghi log, lưu vết và phục vụ quan sát hệ thống
 
-- Site-based config theo kieu `conf.d/*.conf`
-- Lua request policy trong `access_by_lua*`
-- Route `/api/demo` proxy toi backend test bang domain local
-- Route `/api/secure-demo` duoc bao ve bang JWT
-- Rate limiting theo IP bang `lua_shared_dict`
-- Site-specific access log
-- Health endpoint
-- Docker Compose de chay local
-- Log file duoc luu trong repo va mount ra host
+Mã nguồn hiện tại đang ở giai đoạn thử nghiệm kỹ thuật và xây dựng mẫu ban đầu, nhưng cách tổ chức đã hướng tới việc phát triển tiếp thành một dự án dùng được trong môi trường thực tế.
 
-## Cau truc
+## Hướng tiếp cận kiến trúc
+
+Hệ thống được tổ chức theo cách:
+
+- `NGINX/OpenResty` làm lõi tiếp nhận và xử lý yêu cầu
+- `Lua` đảm nhiệm phần logic bổ sung ở tầng cổng điều phối
+- tệp cấu hình nginx giữ phần khung của luồng xử lý
+- các mô-đun Lua giữ phần chính sách và xử lý động
+
+Trong cách tổ chức hiện nay:
+
+- `nginx.conf` giữ cấu hình chung
+- `conf.d/*.conf` đại diện cho từng miền hoặc từng khối `server`
+- `lib/gateway/*.lua` chứa các mô-đun logic có thể dùng lại
+
+## Những khả năng hiện có
+
+Phiên bản hiện tại đã có các khả năng nền tảng sau:
+
+- định tuyến theo tên miền trong `server_name`
+- chuyển tiếp yêu cầu tới dịch vụ phía sau
+- kiểm tra `JWT` cho các tuyến yêu cầu bảo vệ
+- giới hạn tốc độ theo cửa sổ thời gian cố định
+- chặn một số mẫu tấn công bằng WAF mức nhẹ
+- tách log truy cập và log lỗi theo từng miền
+
+Những phần này chủ yếu phục vụ cho:
+
+- nghiên cứu mức độ phù hợp của OpenResty
+- kiểm chứng các bài toán thường gặp của một cổng điều phối
+- chuẩn bị cho việc đo đạc và so sánh hiệu năng
+
+## Các phần chính của hệ thống
+
+### Phần cấu hình
+
+- [conf/nginx.conf](/home/thaint/Documents/openresty/conf/nginx.conf)
+  - tệp cấu hình gốc của OpenResty
+  - khai báo đường dẫn nạp mô-đun Lua, vùng nhớ dùng chung, định dạng log và việc nạp các tệp cấu hình site
+
+- [conf/conf.d/gateway.conf](/home/thaint/Documents/openresty/conf/conf.d/gateway.conf)
+  - cấu hình cho cổng điều phối chính
+  - chứa các tuyến công khai và các tuyến yêu cầu xác thực
+
+- [conf/conf.d/admin.conf](/home/thaint/Documents/openresty/conf/conf.d/admin.conf)
+  - cấu hình cho miền quản trị hoặc miền minh họa tách riêng
+
+### Phần logic Lua
+
+- [lib/gateway/init.lua](/home/thaint/Documents/openresty/lib/gateway/init.lua)
+  - mô-đun khởi tạo cơ bản
+
+- [lib/gateway/auth.lua](/home/thaint/Documents/openresty/lib/gateway/auth.lua)
+  - xử lý việc kiểm tra `JWT`
+
+- [lib/gateway/rate_limit.lua](/home/thaint/Documents/openresty/lib/gateway/rate_limit.lua)
+  - xử lý giới hạn tốc độ
+
+- [lib/gateway/waf.lua](/home/thaint/Documents/openresty/lib/gateway/waf.lua)
+  - bộ máy lọc và chặn yêu cầu mức nhẹ
+
+- [lib/gateway/waf_rules.lua](/home/thaint/Documents/openresty/lib/gateway/waf_rules.lua)
+  - tập luật dùng cho bộ lọc yêu cầu
+
+## Cấu trúc thư mục
 
 ```text
 conf/
+  nginx.conf
   conf.d/
-    admin.conf
     gateway.conf
+    admin.conf
   env/
     dev.env.example
-  nginx.conf
+
 lib/
   gateway/
-    auth.lua
     init.lua
+    auth.lua
     rate_limit.lua
+    waf.lua
+    waf_rules.lua
+
 logs/
-  error.log
-  gateway-test.local.access.log
-  gateway-test.local.error.log
-  admin-test.local.access.log
-  admin-test.local.error.log
-docker-compose.yml
+
 doc/
+  openresty-gateway-plan.md
+  openresty-research-plan.md
+  openresty-mvp.md
+  openresty-evaluation-test-cases.md
+
+docker-compose.yml
 ```
 
-`conf/nginx.conf` giu cac phan global/http-level, con tung `site` duoc tach rieng trong `conf/conf.d/*.conf`.
-Log duoc ghi theo site trong `logs/*.access.log` va `logs/*.error.log`, dong thoi van giu `logs/error.log` lam global error log toi thieu o muc `warn`.
+## Nguyên tắc tổ chức mã nguồn
 
-## Cach chay
+Dự án hiện được giữ theo các nguyên tắc sau:
 
-```bash
-docker compose up
-```
+- mỗi tệp trong `conf.d` tương ứng với một khối `server` hoặc một miền
+- logic dùng lại được đặt trong `lib/gateway`
+- cấu hình chung và cấu hình theo từng miền được tách riêng
+- log được chia theo từng miền để thuận tiện khi vận hành
+- các dịch vụ phục vụ việc thử nghiệm như dịch vụ phía sau hoặc dịch vụ phát hành token được tách thành dự án riêng
 
-Xem log tren host:
+## Log và vận hành
 
-```bash
-tail -f logs/error.log
-tail -f logs/gateway-test.local.access.log
-tail -f logs/gateway-test.local.error.log
-tail -f logs/admin-test.local.access.log
-tail -f logs/admin-test.local.error.log
-```
+Hệ thống hiện ghi log ở hai mức:
 
-Gateway se mo o:
+- log lỗi chung của toàn bộ tiến trình
+- log truy cập và log lỗi riêng theo từng miền
 
-- `http://localhost:8080/` voi header `Host: gateway-test.local`
-- `http://localhost:8080/health` voi header `Host: gateway-test.local`
-- `http://localhost:8080/api/demo` voi header `Host: gateway-test.local`
-- `http://localhost:8080/api/secure-demo` voi header `Host: gateway-test.local`
-- `http://localhost:8080/` voi header `Host: admin-test.local`
+Các tệp log được ánh xạ ra máy chủ chạy Docker để phục vụ:
 
-## Cach test nhanh
+- theo dõi hoạt động
+- tra cứu khi có sự cố
+- đối chiếu khi đo đạc hiệu năng
 
-```bash
-curl -H 'Host: gateway-test.local' http://localhost:8080/health
-curl -H 'Host: gateway-test.local' http://localhost:8080/api/demo
-curl -H 'Host: admin-test.local' http://localhost:8080/
-```
+Các tệp log hiện có:
 
-Tao JWT local de test `secure-demo`:
+- [logs/error.log](/home/thaint/Documents/openresty/logs/error.log)
+- [logs/gateway-test.local.access.log](/home/thaint/Documents/openresty/logs/gateway-test.local.access.log)
+- [logs/gateway-test.local.error.log](/home/thaint/Documents/openresty/logs/gateway-test.local.error.log)
+- [logs/admin-test.local.access.log](/home/thaint/Documents/openresty/logs/admin-test.local.access.log)
+- [logs/admin-test.local.error.log](/home/thaint/Documents/openresty/logs/admin-test.local.error.log)
 
-```bash
-python3 - <<'PY'
-import base64, hashlib, hmac, json, time
+## Môi trường chạy hiện tại
 
-def b64url(data):
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+Repo này được đóng gói bằng Docker để phục vụ phát triển cục bộ và thử nghiệm kỹ thuật.
 
-header = b64url(json.dumps({"alg":"HS256","typ":"JWT"}, separators=(",", ":")).encode())
-payload = b64url(json.dumps({
-    "sub": "demo-user",
-    "iss": "backend-test-auth",
-    "aud": "gateway-test",
-    "exp": int(time.time()) + 3600
-}, separators=(",", ":")).encode())
-signing_input = f"{header}.{payload}".encode()
-signature = b64url(hmac.new(b"openresty-dev-secret", signing_input, hashlib.sha256).digest())
-print(f"{header}.{payload}.{signature}")
-PY
-```
+Cổng điều phối hiện được chạy theo cách:
 
-Sau do goi:
+- dùng `docker compose`
+- ánh xạ toàn bộ mã nguồn vào bên trong vùng làm việc của container
+- khởi động OpenResty với tệp cấu hình chính tại `conf/nginx.conf`
 
-```bash
-curl -H 'Host: gateway-test.local' \
-  -H "Authorization: Bearer <JWT_TOKEN>" \
-  http://localhost:8080/api/secure-demo
-```
+Ngoài cổng điều phối, luồng thử nghiệm hiện tại có thể kết hợp với:
 
-Rate limit hien tai:
+- `backend-test`
+  - dịch vụ phía sau dùng để minh họa việc chuyển tiếp yêu cầu
+- `auth-test`
+  - dịch vụ phát hành token dùng cho luồng đăng nhập và lấy `JWT`
 
-- 5 request / 60 giay / IP cho duong dan `/api/*`
+Hai dự án này là thành phần hỗ trợ cho việc nghiên cứu và thử nghiệm, không phải là phần bắt buộc của kiến trúc cổng điều phối lâu dài.
 
-Co the test vuot nguong:
+## Phạm vi hiện tại và các giới hạn
 
-```bash
-for i in $(seq 1 7); do curl -i -H 'Host: gateway-test.local' http://localhost:8080/api/demo; done
-```
+Những gì hiện đã có:
 
-## MVP nay phu hop voi research objective nao
+- cấu hình miền tĩnh
+- tuyến chuyển tiếp cơ bản
+- xác thực `JWT` theo `HS256`
+- giới hạn tốc độ ở mức cơ bản
+- bộ lọc yêu cầu mức nhẹ dựa trên biểu thức mẫu
+- ghi log ra tệp
 
-- Architecture overview: minh hoa `access_by_lua*`
-- Core features: site-based config + Lua logic
-- Performance evaluation: co the benchmark luong request qua gateway
-- Use cases: API gateway skeleton, rate limiting, security filtering co ban
-- Deployment and operations: co the chay bang Docker Compose
+Những gì chưa có hoặc mới chỉ ở mức tối thiểu:
 
-## Gioi han hien tai
+- kho cấu hình động
+- giao diện hoặc API quản trị
+- cơ chế tìm kiếm dịch vụ
+- kiểm tra sức khỏe chủ động
+- thử lại hoặc ngắt mạch
+- số liệu theo dõi và truy vết
+- quản lý bí mật theo chuẩn vận hành
+- cơ chế chấm điểm hoặc phát hiện bất thường cho WAF
+- tích hợp `OAuth/OIDC` đúng chuẩn
 
-- Chua co JWT auth
-- Chua co dynamic routing
-- Chua co Redis/external config store
-- Chua co metrics/tracing
-- Chua co WAF-lite rules
-- JWT verification dang o muc MVP voi `HS256` va secret hard-code
+## Hướng phát triển tiếp theo
 
-## Buoc tiep theo hop ly
+Lộ trình mở rộng hợp lý cho dự án này:
 
-- Them `JWT validation`
-- Them `request ID` va structured audit log chi tiet hon
-- Them metrics endpoint
-- Noi upstream that vao tung site/route khi backend san sang
+1. chuẩn hóa phần quan sát hệ thống
+2. bổ sung cấu hình động cho tuyến và chính sách
+3. thêm số liệu theo dõi và truy vết
+4. chuyển khóa bí mật sang cơ chế quản lý phù hợp hơn
+5. nâng cấp bộ lọc mức nhẹ thành bộ máy chính sách có chế độ phát hiện và chế độ chặn
+6. bổ sung quản lý dịch vụ phía sau, khả năng chịu lỗi và phần quản trị
+
+## Cách sử dụng README này
+
+README này tập trung vào:
+
+- giới thiệu dự án
+- kiến trúc và các mô-đun chính
+- nguyên tắc tổ chức mã nguồn
+- hướng phát triển về sau
+
+Phần hướng dẫn kiểm thử và đánh giá chi tiết được tách sang các tài liệu riêng:
+
+- [doc/openresty-mvp.md](/home/thaint/Documents/openresty/doc/openresty-mvp.md)
+- [doc/openresty-evaluation-test-cases.md](/home/thaint/Documents/openresty/doc/openresty-evaluation-test-cases.md)
+
+Phần kế hoạch và nghiên cứu:
+
+- [doc/openresty-gateway-plan.md](/home/thaint/Documents/openresty/doc/openresty-gateway-plan.md)
+- [doc/openresty-research-plan.md](/home/thaint/Documents/openresty/doc/openresty-research-plan.md)
