@@ -11,7 +11,9 @@ services:
       - /workspace/conf/nginx.conf
     ports:
       - "8080:8080"
+      - "443:443"
     extra_hosts:
       - "backend-test.local:host-gateway"
     volumes:
       - .:/workspace
+      - /etc/letsencrypt:/etc/letsencrypt:ro

@@ -208,3 +208,7 @@ Phần kế hoạch và nghiên cứu:
 
 - [doc/openresty-gateway-plan.md](/home/thaint/Documents/openresty/doc/openresty-gateway-plan.md)
 - [doc/openresty-research-plan.md](/home/thaint/Documents/openresty/doc/openresty-research-plan.md)
+
+Phần triển khai TLS với `certbot`:
+
+- [doc/openresty-certbot-dns01.md](/home/thaint/Documents/openresty/doc/openresty-certbot-dns01.md)

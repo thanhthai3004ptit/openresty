@@ -7,7 +7,7 @@ local BLOCK_SIZE = 64
 
 local function sha256_digest(input)
     local hash = sha256:new()
-    hash:update(input)
+    hash:update(input) 
     return hash:final()
 end
 
