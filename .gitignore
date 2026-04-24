@@ -4,6 +4,13 @@ logs/*.log
 conf/env/*.env
 !conf/env/*.example
 
+.secrets/*
+!.secrets/.gitkeep
+!.secrets/certbot/
+!.secrets/certbot/.gitkeep
+.secrets/certbot/*.ini
+!.secrets/certbot/cloudflare.ini.example
+
 .DS_Store
 Thumbs.db
 .codex

@@ -12,7 +12,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - .:/etc/openresty:ro
+      - ./conf:/etc/openresty/conf:ro
       - ./conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./lib:/etc/openresty/lib:ro
       - ./logs:/var/log/openresty
       - /etc/letsencrypt:/etc/letsencrypt:ro
