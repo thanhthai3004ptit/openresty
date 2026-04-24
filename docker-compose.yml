@@ -2,18 +2,17 @@ services:
   gateway:
     image: openresty/openresty:1.27.1.2-0-alpine-fat
     container_name: openresty-gateway-mvp
-    working_dir: /workspace
+    working_dir: /etc/openresty
     command:
       - openresty
       - -g
       - daemon off;
-      - -c
-      - /workspace/conf/nginx.conf
     ports:
-      - "8080:8080"
-      - "443:443"
+      - "443:8443"
     extra_hosts:
-      - "backend-test.local:host-gateway"
+      - "host.docker.internal:host-gateway"
     volumes:
-      - .:/workspace
+      - .:/etc/openresty:ro
+      - ./conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./logs:/var/log/openresty
       - /etc/letsencrypt:/etc/letsencrypt:ro
