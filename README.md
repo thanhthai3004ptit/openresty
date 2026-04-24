@@ -1,214 +1,164 @@
-# Cổng điều phối OpenResty
+# OpenResty Gateway
 
-## Giới thiệu
+Project này đóng gói `OpenResty` bằng Docker để làm web server/reverse proxy ở lớp biên. Cấu hình chạy theo từng domain trong `conf/conf.d`, certificate do `certbot` trên host cấp bằng DNS-01, còn container chỉ mount cert đã có và reload khi cần.
 
-Đây là dự án xây dựng cổng điều phối trên nền `OpenResty`, hướng tới vai trò xử lý lưu lượng ở lớp biên và lớp API. Mục tiêu của dự án là tạo ra một nền tảng có thể mở rộng dần để đảm nhiệm các nhóm chức năng sau:
+## Luồng Hoạt Động
 
-- chuyển tiếp yêu cầu và định tuyến đến dịch vụ phù hợp
-- xác thực và phân quyền ngay tại cổng điều phối
-- giới hạn tốc độ và kiểm soát lưu lượng
-- lọc yêu cầu và chặn các mẫu tấn công cơ bản
-- ghi log, lưu vết và phục vụ quan sát hệ thống
+Luồng request chính:
 
-Mã nguồn hiện tại đang ở giai đoạn thử nghiệm kỹ thuật và xây dựng mẫu ban đầu, nhưng cách tổ chức đã hướng tới việc phát triển tiếp thành một dự án dùng được trong môi trường thực tế.
+```text
+Client
+  -> DNS trỏ domain về server
+  -> Docker publish port 443
+  -> OpenResty container
+  -> server block theo server_name
+  -> upstream/backend hoặc response tĩnh
+```
 
-## Hướng tiếp cận kiến trúc
+Luồng cấu hình:
 
-Hệ thống được tổ chức theo cách:
+```text
+conf/nginx.conf
+  -> include conf/conf.d/*.conf
+  -> mỗi file trong conf/conf.d là một domain/server block
+```
 
-- `NGINX/OpenResty` làm lõi tiếp nhận và xử lý yêu cầu
-- `Lua` đảm nhiệm phần logic bổ sung ở tầng cổng điều phối
-- tệp cấu hình nginx giữ phần khung của luồng xử lý
-- các mô-đun Lua giữ phần chính sách và xử lý động
+Luồng TLS:
 
-Trong cách tổ chức hiện nay:
+```text
+scripts/create-tls-site.sh
+  -> tạo hoặc dùng lại certificate trong /etc/letsencrypt
+  -> render config từ conf/templates/tls-site.conf.template
+  -> docker exec openresty -t
+  -> docker exec openresty -s reload
+```
 
-- `nginx.conf` giữ cấu hình chung
-- `conf.d/*.conf` đại diện cho từng miền hoặc từng khối `server`
-- `lib/gateway/*.lua` chứa các mô-đun logic có thể dùng lại
+Luồng renew tự động:
 
-## Những khả năng hiện có
+```text
+certbot.timer
+  -> certbot.service
+  -> certbot renew
+  -> nếu cert được renew thành công
+  -> renewal hook reload OpenResty
+  -> ghi logs/<domain>.cert.log
+```
 
-Phiên bản hiện tại đã có các khả năng nền tảng sau:
-
-- định tuyến theo tên miền trong `server_name`
-- chuyển tiếp yêu cầu tới dịch vụ phía sau
-- kiểm tra `JWT` cho các tuyến yêu cầu bảo vệ
-- giới hạn tốc độ theo cửa sổ thời gian cố định
-- chặn một số mẫu tấn công bằng WAF mức nhẹ
-- tách log truy cập và log lỗi theo từng miền
-
-Những phần này chủ yếu phục vụ cho:
-
-- nghiên cứu mức độ phù hợp của OpenResty
-- kiểm chứng các bài toán thường gặp của một cổng điều phối
-- chuẩn bị cho việc đo đạc và so sánh hiệu năng
-
-## Các phần chính của hệ thống
-
-### Phần cấu hình
-
-- [conf/nginx.conf](/home/thaint/Documents/openresty/conf/nginx.conf)
-  - tệp cấu hình gốc của OpenResty
-  - khai báo đường dẫn nạp mô-đun Lua, vùng nhớ dùng chung, định dạng log và việc nạp các tệp cấu hình site
-
-- [conf/conf.d/gateway.conf](/home/thaint/Documents/openresty/conf/conf.d/gateway.conf)
-  - cấu hình cho cổng điều phối chính
-  - chứa các tuyến công khai và các tuyến yêu cầu xác thực
-
-- [conf/conf.d/admin.conf](/home/thaint/Documents/openresty/conf/conf.d/admin.conf)
-  - cấu hình cho miền quản trị hoặc miền minh họa tách riêng
-
-### Phần logic Lua
-
-- [lib/gateway/init.lua](/home/thaint/Documents/openresty/lib/gateway/init.lua)
-  - mô-đun khởi tạo cơ bản
-
-- [lib/gateway/auth.lua](/home/thaint/Documents/openresty/lib/gateway/auth.lua)
-  - xử lý việc kiểm tra `JWT`
-
-- [lib/gateway/rate_limit.lua](/home/thaint/Documents/openresty/lib/gateway/rate_limit.lua)
-  - xử lý giới hạn tốc độ
-
-- [lib/gateway/waf.lua](/home/thaint/Documents/openresty/lib/gateway/waf.lua)
-  - bộ máy lọc và chặn yêu cầu mức nhẹ
-
-- [lib/gateway/waf_rules.lua](/home/thaint/Documents/openresty/lib/gateway/waf_rules.lua)
-  - tập luật dùng cho bộ lọc yêu cầu
-
-## Cấu trúc thư mục
+## Cấu Trúc Chính
 
 ```text
 conf/
   nginx.conf
   conf.d/
-    gateway.conf
-    admin.conf
-  env/
-    dev.env.example
+    *.conf
+  templates/
+    tls-site.conf.template
+  examples/
 
 lib/
   gateway/
-    init.lua
     auth.lua
     rate_limit.lua
     waf.lua
     waf_rules.lua
 
-logs/
+scripts/
+  create-tls-site.sh
+  reload-openresty-after-renew.sh
 
-doc/
-  openresty-gateway-plan.md
-  openresty-research-plan.md
-  openresty-mvp.md
-  openresty-evaluation-test-cases.md
+logs/
+  *.access.log
+  *.error.log
+  *.cert.log
+
+.secrets/
+  certbot/
+    cloudflare.ini.example
 
 docker-compose.yml
 ```
 
-## Nguyên tắc tổ chức mã nguồn
+## Docker Mount
 
-Dự án hiện được giữ theo các nguyên tắc sau:
+`docker-compose.yml` mount theo layout sau:
 
-- mỗi tệp trong `conf.d` tương ứng với một khối `server` hoặc một miền
-- logic dùng lại được đặt trong `lib/gateway`
-- cấu hình chung và cấu hình theo từng miền được tách riêng
-- log được chia theo từng miền để thuận tiện khi vận hành
-- các dịch vụ phục vụ việc thử nghiệm như dịch vụ phía sau hoặc dịch vụ phát hành token được tách thành dự án riêng
+```yaml
+volumes:
+  - ./conf:/etc/openresty/conf:ro
+  - ./conf/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+  - ./lib:/etc/openresty/lib:ro
+  - ./logs:/var/log/openresty
+  - /etc/letsencrypt:/etc/letsencrypt:ro
+```
 
-## Log và vận hành
+Điểm quan trọng:
 
-Hệ thống hiện ghi log ở hai mức:
+- `conf/nginx.conf` được bind vào default config path của image để dùng được `openresty -t` và `openresty -s reload` không cần `-c`.
+- `logs/` trên host tương ứng `/var/log/openresty` trong container.
+- `/etc/letsencrypt` mount read-only vào container; certbot vẫn chạy ngoài host.
+- `.secrets/` không mount vào container.
 
-- log lỗi chung của toàn bộ tiến trình
-- log truy cập và log lỗi riêng theo từng miền
+## Lệnh Vận Hành Nhanh
 
-Các tệp log được ánh xạ ra máy chủ chạy Docker để phục vụ:
+Start hoặc recreate container:
 
-- theo dõi hoạt động
-- tra cứu khi có sự cố
-- đối chiếu khi đo đạc hiệu năng
+```bash
+docker compose up -d
+```
 
-Các tệp log hiện có:
+Kiểm tra config:
 
-- [logs/error.log](/home/thaint/Documents/openresty/logs/error.log)
-- [logs/gateway-test.local.access.log](/home/thaint/Documents/openresty/logs/gateway-test.local.access.log)
-- [logs/gateway-test.local.error.log](/home/thaint/Documents/openresty/logs/gateway-test.local.error.log)
-- [logs/admin-test.local.access.log](/home/thaint/Documents/openresty/logs/admin-test.local.access.log)
-- [logs/admin-test.local.error.log](/home/thaint/Documents/openresty/logs/admin-test.local.error.log)
+```bash
+docker exec openresty-gateway-mvp openresty -t
+```
 
-## Môi trường chạy hiện tại
+Reload config/cert:
 
-Repo này được đóng gói bằng Docker để phục vụ phát triển cục bộ và thử nghiệm kỹ thuật.
+```bash
+docker exec openresty-gateway-mvp openresty -s reload
+```
 
-Cổng điều phối hiện được chạy theo cách:
+Reopen log sau logrotate:
 
-- dùng `docker compose`
-- ánh xạ toàn bộ mã nguồn vào bên trong vùng làm việc của container
-- khởi động OpenResty với tệp cấu hình chính tại `conf/nginx.conf`
+```bash
+docker exec openresty-gateway-mvp openresty -s reopen
+```
 
-Ngoài cổng điều phối, luồng thử nghiệm hiện tại có thể kết hợp với:
+Tạo site TLS hoặc re-issue cert:
 
-- `backend-test`
-  - dịch vụ phía sau dùng để minh họa việc chuyển tiếp yêu cầu
-- `auth-test`
-  - dịch vụ phát hành token dùng cho luồng đăng nhập và lấy `JWT`
+```bash
+./scripts/create-tls-site.sh
+```
 
-Hai dự án này là thành phần hỗ trợ cho việc nghiên cứu và thử nghiệm, không phải là phần bắt buộc của kiến trúc cổng điều phối lâu dài.
+Script có hai chế độ:
 
-## Phạm vi hiện tại và các giới hạn
+```text
+1) Create new SSL and config
+2) Re-issue SSL only, keep existing config
+```
 
-Những gì hiện đã có:
+## Log
 
-- cấu hình miền tĩnh
-- tuyến chuyển tiếp cơ bản
-- xác thực `JWT` theo `HS256`
-- giới hạn tốc độ ở mức cơ bản
-- bộ lọc yêu cầu mức nhẹ dựa trên biểu thức mẫu
-- ghi log ra tệp
+Mỗi domain nên có log riêng:
 
-Những gì chưa có hoặc mới chỉ ở mức tối thiểu:
+```text
+logs/<domain>.access.log
+logs/<domain>.error.log
+logs/<domain>.cert.log
+```
 
-- kho cấu hình động
-- giao diện hoặc API quản trị
-- cơ chế tìm kiếm dịch vụ
-- kiểm tra sức khỏe chủ động
-- thử lại hoặc ngắt mạch
-- số liệu theo dõi và truy vết
-- quản lý bí mật theo chuẩn vận hành
-- cơ chế chấm điểm hoặc phát hiện bất thường cho WAF
-- tích hợp `OAuth/OIDC` đúng chuẩn
+Trong đó:
 
-## Hướng phát triển tiếp theo
+- `access.log`: request log JSON từ OpenResty.
+- `error.log`: error log của domain.
+- `cert.log`: log thao tác tạo cert, renew cert, test config, reload.
 
-Lộ trình mở rộng hợp lý cho dự án này:
+Logrotate nên được cấu hình trên host. Xem hướng dẫn đầy đủ tại [doc/openresty-certbot-dns01.md](doc/openresty-certbot-dns01.md).
 
-1. chuẩn hóa phần quan sát hệ thống
-2. bổ sung cấu hình động cho tuyến và chính sách
-3. thêm số liệu theo dõi và truy vết
-4. chuyển khóa bí mật sang cơ chế quản lý phù hợp hơn
-5. nâng cấp bộ lọc mức nhẹ thành bộ máy chính sách có chế độ phát hiện và chế độ chặn
-6. bổ sung quản lý dịch vụ phía sau, khả năng chịu lỗi và phần quản trị
+## Tài Liệu
 
-## Cách sử dụng README này
-
-README này tập trung vào:
-
-- giới thiệu dự án
-- kiến trúc và các mô-đun chính
-- nguyên tắc tổ chức mã nguồn
-- hướng phát triển về sau
-
-Phần hướng dẫn kiểm thử và đánh giá chi tiết được tách sang các tài liệu riêng:
-
-- [doc/openresty-mvp.md](/home/thaint/Documents/openresty/doc/openresty-mvp.md)
-- [doc/openresty-evaluation-test-cases.md](/home/thaint/Documents/openresty/doc/openresty-evaluation-test-cases.md)
-
-Phần kế hoạch và nghiên cứu:
-
-- [doc/openresty-gateway-plan.md](/home/thaint/Documents/openresty/doc/openresty-gateway-plan.md)
-- [doc/openresty-research-plan.md](/home/thaint/Documents/openresty/doc/openresty-research-plan.md)
-
-Phần triển khai TLS với `certbot`:
-
-- [doc/openresty-certbot-dns01.md](/home/thaint/Documents/openresty/doc/openresty-certbot-dns01.md)
+- [doc/openresty-certbot-dns01.md](doc/openresty-certbot-dns01.md): cài đặt từ đầu đến cuối, DNS-01, renew hook, logrotate, vận hành.
+- [doc/openresty-mvp.md](doc/openresty-mvp.md): ghi chú MVP.
+- [doc/openresty-evaluation-test-cases.md](doc/openresty-evaluation-test-cases.md): test case đánh giá.
+- [doc/openresty-gateway-plan.md](doc/openresty-gateway-plan.md): kế hoạch gateway dài hạn.
+- [doc/openresty-research-plan.md](doc/openresty-research-plan.md): kế hoạch nghiên cứu OpenResty.
