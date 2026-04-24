@@ -5,11 +5,21 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE_FILE="${PROJECT_ROOT}/conf/templates/tls-site.conf.template"
 CONF_DIR="${PROJECT_ROOT}/conf/conf.d"
 SECRET_FILE="${PROJECT_ROOT}/.secrets/certbot/cloudflare.ini"
+LOG_DIR="${PROJECT_ROOT}/logs"
 CONTAINER_NAME="${OPENRESTY_CONTAINER_NAME:-openresty-gateway-mvp}"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+cert_log() {
+    local domain="$1"
+    local level="$2"
+    shift 2
+
+    mkdir -p "$LOG_DIR"
+    printf '%s %s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$level" "$*" >> "${LOG_DIR}/${domain}.cert.log"
 }
 
 prompt() {
@@ -60,6 +70,12 @@ validate_number() {
     [[ "$value" =~ ^[0-9]+$ ]] || fail "${name} must be a number"
 }
 
+find_domain_configs() {
+    local domain="$1"
+
+    grep -RslE "^[[:space:]]*server_name[[:space:]]+([^;[:space:]]+[[:space:]]+)*${domain}([[:space:];]|$)" "$CONF_DIR" 2>/dev/null || true
+}
+
 render_config() {
     local target_file="$1"
     local domain="$2"
@@ -79,27 +95,55 @@ render_config() {
 issue_cert() {
     local domain="$1"
     local email="$2"
+    local force_reissue="${3:-n}"
 
-    [ -f "$SECRET_FILE" ] || fail "Missing Cloudflare credential file: ${SECRET_FILE}. Copy .secrets/certbot/cloudflare.ini.example and fill the token."
+    if [ ! -f "$SECRET_FILE" ]; then
+        cert_log "$domain" "ERROR" "missing Cloudflare credential file: ${SECRET_FILE}"
+        fail "Missing Cloudflare credential file: ${SECRET_FILE}. Copy .secrets/certbot/cloudflare.ini.example and fill the token."
+    fi
     chmod 600 "$SECRET_FILE"
 
     if [ -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]; then
-        if ! prompt_yes_no "Certificate already exists for ${domain}. Re-issue it?" "n"; then
+        if [ "$force_reissue" != "y" ] && ! prompt_yes_no "Certificate already exists for ${domain}. Re-issue it?" "n"; then
+            cert_log "$domain" "INFO" "skip gen cert because certificate already exists"
             printf 'Skip certbot because certificate already exists.\n'
             return 0
         fi
     fi
 
-    sudo certbot certonly \
+    cert_log "$domain" "INFO" "gen cert start"
+    if ! sudo certbot certonly \
         --dns-cloudflare \
         --dns-cloudflare-credentials "$SECRET_FILE" \
         --non-interactive \
         --agree-tos \
         --email "$email" \
-        -d "$domain"
+        -d "$domain"; then
+        cert_log "$domain" "ERROR" "gen cert failed"
+        return 1
+    fi
+    cert_log "$domain" "INFO" "gen cert success"
 }
 
-main() {
+reload_openresty() {
+    local domain="$1"
+
+    printf 'Testing OpenResty config in container %s...\n' "$CONTAINER_NAME"
+    if ! docker exec "$CONTAINER_NAME" openresty -t; then
+        cert_log "$domain" "ERROR" "openresty config test failed"
+        return 1
+    fi
+    cert_log "$domain" "INFO" "openresty config test success"
+
+    printf 'Reloading OpenResty...\n'
+    if ! docker exec "$CONTAINER_NAME" openresty -s reload; then
+        cert_log "$domain" "ERROR" "openresty reload failed"
+        return 1
+    fi
+    cert_log "$domain" "INFO" "openresty reload success"
+}
+
+create_ssl_and_config() {
     require_command certbot
     require_command docker
     require_command sed
@@ -113,19 +157,43 @@ main() {
     local upstream_url
     local upstream_host
     local target_file
+    local existing_configs
     local tmp_file
     local backup_file=""
+    local overwrite_existing="n"
 
     domain="$(prompt "Domain *" "")"
     validate_domain "$domain"
+    cert_log "$domain" "INFO" "create tls site config start"
+
+    target_file="${CONF_DIR}/${domain}.conf"
+    existing_configs="$(find_domain_configs "$domain")"
+    if [ -f "$target_file" ] || [ -n "$existing_configs" ]; then
+        printf 'Domain %s already has config:\n' "$domain"
+        if [ -f "$target_file" ]; then
+            printf '  - %s\n' "$target_file"
+        fi
+        if [ -n "$existing_configs" ]; then
+            printf '%s\n' "$existing_configs" | while IFS= read -r existing_file; do
+                [ "$existing_file" = "$target_file" ] && continue
+                printf '  - %s\n' "$existing_file"
+            done
+        fi
+
+        if ! prompt_yes_no "Continue and overwrite ${target_file}?" "n"; then
+            cert_log "$domain" "INFO" "stopped because domain already exists in config"
+            fail "Stopped because domain already exists in config"
+        fi
+        overwrite_existing="y"
+    fi
 
     email="$(prompt "Let's Encrypt email *" "")"
     [ -n "$email" ] || fail "Email is required for certbot registration"
 
-    listen_port="$(prompt "Container listen port *" "8443")"
+    listen_port="$(prompt "Container listen port *" "")"
     validate_number "Container listen port" "$listen_port"
 
-    upstream_url="$(prompt "Upstream URL *" "http://host.docker.internal:9001")"
+    upstream_url="$(prompt "Upstream URL *" "example: http://IP:port")"
     [ -n "$upstream_url" ] || fail "Upstream URL is required"
 
     upstream_host="$(prompt "Upstream Host header" "$domain")"
@@ -133,15 +201,14 @@ main() {
         upstream_host='$host'
     fi
 
-    target_file="${CONF_DIR}/${domain}.conf"
     tmp_file="$(mktemp "/tmp/${domain}.XXXXXX.conf")"
 
     render_config "$tmp_file" "$domain" "$listen_port" "$upstream_url" "$upstream_host"
 
     if [ -f "$target_file" ]; then
-        if ! prompt_yes_no "Config ${target_file} already exists. Overwrite?" "n"; then
+        if [ "$overwrite_existing" != "y" ]; then
             rm -f "$tmp_file"
-            fail "Stopped without overwriting existing config"
+            fail "Config ${target_file} already exists"
         fi
         backup_file="${target_file}.backup.$(date +%Y%m%d%H%M%S)"
     fi
@@ -154,14 +221,15 @@ main() {
     mv "$tmp_file" "$target_file"
     printf 'Created config: %s\n' "$target_file"
 
-    printf 'Testing OpenResty config in container %s...\n' "$CONTAINER_NAME"
-    if ! docker exec "$CONTAINER_NAME" openresty -t; then
-        printf 'OpenResty config test failed. Keeping generated config for manual fix: %s\n' "$target_file" >&2
+    if ! reload_openresty "$domain"; then
+        printf 'OpenResty test or reload failed. Keeping generated config for manual fix: %s\n' "$target_file" >&2
         if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
             mv "$backup_file" "$target_file"
+            cert_log "$domain" "INFO" "restored previous config after failed test"
             printf 'Restored previous config from backup: %s\n' "$backup_file" >&2
         else
             rm -f "$target_file"
+            cert_log "$domain" "INFO" "removed generated config after failed test"
             printf 'Removed generated config so current OpenResty config remains usable.\n' >&2
         fi
         exit 1
@@ -171,9 +239,47 @@ main() {
         rm -f "$backup_file"
     fi
 
-    printf 'Reloading OpenResty...\n'
-    docker exec "$CONTAINER_NAME" openresty -s reload
     printf 'Done. Site %s is configured and OpenResty was reloaded.\n' "$domain"
+}
+
+renew_ssl_only() {
+    require_command certbot
+    require_command docker
+
+    local domain
+    local email
+
+    domain="$(prompt "Domain *" "")"
+    validate_domain "$domain"
+    cert_log "$domain" "INFO" "renew ssl only start"
+
+    if [ ! -f "/etc/letsencrypt/live/${domain}/fullchain.pem" ]; then
+        cert_log "$domain" "ERROR" "cannot renew ssl only because certificate does not exist"
+        fail "Certificate does not exist for ${domain}. Use option 1 to create SSL and config first."
+    fi
+
+    email="$(prompt "Let's Encrypt email *" "")"
+    [ -n "$email" ] || fail "Email is required for certbot registration"
+
+    issue_cert "$domain" "$email" "y"
+    if ! reload_openresty "$domain"; then
+        fail "OpenResty test or reload failed after re-issuing certificate"
+    fi
+    printf 'Done. Certificate for %s was re-issued and OpenResty was reloaded. Config was not changed.\n' "$domain"
+}
+
+main() {
+    local choice
+
+    printf '1) Create new SSL and config\n'
+    printf '2) Re-issue SSL only, keep existing config\n'
+    choice="$(prompt "Choose option *" "")"
+
+    case "$choice" in
+        1) create_ssl_and_config ;;
+        2) renew_ssl_only ;;
+        *) fail "Invalid option: ${choice}" ;;
+    esac
 }
 
 main "$@"
